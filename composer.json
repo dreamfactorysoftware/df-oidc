@@ -1,0 +1,49 @@
+{
+  "name":        "dreamfactory/df-oidc",
+  "description": "OpenID Connect support for DreamFactory",
+  "keywords":    [
+    "dreamfactory",
+    "api",
+    "rest",
+    "auth",
+    "oauth",
+    "openid",
+    "connect",
+    "authentication",
+    "authorization",
+    "user_info"
+  ],
+  "homepage":    "https://www.dreamfactory.com/",
+  "license":     "proprietary",
+  "authors":     [
+    {
+      "name":  "Arif Islam",
+      "email": "arifislam@dreamfactory.com"
+    },
+    {
+      "name":  "Lee Hicks",
+      "email": "leehicks@dreamfactory.com"
+    }
+  ],
+  "support":     {
+    "email":  "support@dreamfactory.com",
+    "source": "https://github.com/dreamfactorysoftware/df-oidc",
+    "issues": "https://github.com/dreamfactorysoftware/df-oidc/issues",
+    "wiki":   "https://wiki.dreamfactory.com"
+  },
+  "require":     {
+    "dreamfactory/df-core": "~0.9.0",
+    "dreamfactory/df-oauth": "~0.9.0",
+    "phpseclib/phpseclib": "2.0.*"
+  },
+  "autoload":    {
+    "psr-4": {
+      "DreamFactory\\Core\\Oidc\\": "src/"
+    }
+  },
+  "extra":       {
+    "branch-alias": {
+      "dev-develop": "0.3.x-dev"
+    }
+  }
+}
