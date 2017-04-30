@@ -1,6 +1,7 @@
 <?php
 
 namespace DreamFactory\Core\Oidc\Services;
+
 use DreamFactory\Core\OAuth\Services\BaseOAuthService;
 use DreamFactory\Core\Oidc\Components\OidcProvider;
 
@@ -11,6 +12,9 @@ class OIDC extends BaseOAuthService
      */
     const PROVIDER_NAME = 'openid_connect';
 
+    /**
+     * {@inheritdoc}
+     */
     protected function setProvider($config)
     {
         $this->provider = new OidcProvider(
@@ -18,6 +22,7 @@ class OIDC extends BaseOAuthService
             array_get($config, 'client_secret'),
             array_get($config, 'redirect_url')
         );
+        $this->provider->setDiscoveryEndpoint(array_get($config, 'discovery_document'));
         $this->provider->setAuthEndpoint(array_get($config, 'auth_endpoint'));
         $this->provider->setTokenEndpoint(array_get($config, 'token_endpoint'));
         $this->provider->setUserEndpoint(array_get($config, 'user_endpoint'));
@@ -27,6 +32,9 @@ class OIDC extends BaseOAuthService
         $this->provider->setScopes($scopes);
     }
 
+    /**
+     * {@inheritdoc}
+     */
     public function getProviderName()
     {
         return self::PROVIDER_NAME;

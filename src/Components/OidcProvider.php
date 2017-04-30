@@ -5,6 +5,7 @@ namespace DreamFactory\Core\Oidc\Components;
 use DreamFactory\Core\Exceptions\InternalServerErrorException;
 use DreamFactory\Core\Exceptions\UnauthorizedException;
 use DreamFactory\Core\OAuth\Components\DfOAuthTwoProvider;
+use DreamFactory\Core\Oidc\Models\OidcConfig;
 use Illuminate\Http\Request;
 use Laravel\Socialite\Two\AbstractProvider;
 use Laravel\Socialite\Two\InvalidStateException;
@@ -28,27 +29,65 @@ use Config;
  */
 class OidcProvider extends AbstractProvider
 {
+    /** Cache key constant */
     const JWKS_CACHE_KEY = 'oidc-jwks';
 
     use DfOAuthTwoProvider;
 
     /**
-     * The separating character for the requested scopes.
-     *
-     * @var string
+     * {@inheritdoc}
      */
     protected $scopeSeparator = ' ';
 
+    /**
+     * OpenID Connect discovery document endpoint
+     *
+     * @var null|string
+     */
+    protected $discoveryEndpoint = null;
+
+    /**
+     * OpenID Connect auth endpoint
+     *
+     * @var null|string
+     */
     protected $authEndpoint = null;
 
+    /**
+     * OpenID Connect token endpoint
+     *
+     * @var null|string
+     */
     protected $tokenEndpoint = null;
 
+    /**
+     * OpenID Connect user endpoint
+     *
+     * @var null|string
+     */
     protected $userEndpoint = null;
 
+    /**
+     * OpenID Connect public keys endpoint
+     *
+     * @var null|string
+     */
     protected $jwksUri = null;
 
+    /**
+     * OpenID Connect ID Token validation check flag
+     *
+     * @var bool
+     */
     public $validateIdToken = false;
 
+    /**
+     * OidcProvider constructor.
+     *
+     * @param \Illuminate\Http\Request $clientId
+     * @param string                   $clientSecret
+     * @param string                   $redirectUrl
+     */
     public function __construct($clientId, $clientSecret, $redirectUrl)
     {
         /** @var Request $request */
@@ -56,26 +95,49 @@ class OidcProvider extends AbstractProvider
         parent::__construct($request, $clientId, $clientSecret, $redirectUrl);
     }
 
+    /**
+     * @param string $endpoint
+     */
+    public function setDiscoveryEndpoint($endpoint)
+    {
+        $this->discoveryEndpoint = $endpoint;
+    }
+
+    /**
+     * @param string $endpoint
+     */
     public function setAuthEndpoint($endpoint)
     {
         $this->authEndpoint = $endpoint;
     }
 
+    /**
+     * @param string $endpoint
+     */
     public function setTokenEndpoint($endpoint)
     {
         $this->tokenEndpoint = $endpoint;
     }
 
+    /**
+     * @param string $endpoint
+     */
     public function setUserEndpoint($endpoint)
     {
         $this->userEndpoint = $endpoint;
     }
 
+    /**
+     * @param string $uri
+     */
     public function setJwksUri($uri)
     {
         $this->jwksUri = $uri;
     }
 
+    /**
+     * @param array $scopes
+     */
     public function setScopes(array $scopes)
     {
         $this->scopes = $scopes;
@@ -95,7 +157,7 @@ class OidcProvider extends AbstractProvider
         $token = $this->parseAccessToken($response);
         $payload = $this->validateIdToken($response);
 
-        if (!empty($payload) && is_array($payload)){
+        if (!empty($payload) && is_array($payload) && !empty($payload['name']) && !empty($payload['email'])) {
             $user = $this->mapUserToObject($payload);
         } else {
             $user = $this->mapUserToObject($this->getUserByToken($token));
@@ -110,7 +172,26 @@ class OidcProvider extends AbstractProvider
             ->setExpiresIn($this->parseExpiresIn($response));
     }
 
-    protected function validateIdToken($response)
+    /**
+     * {@inheritdoc}
+     */
+    protected function parseAccessToken($body)
+    {
+        $token = array_get($body, 'access_token');
+        if (empty($token)) {
+            $token = '--NOT-AVAILABLE--';
+        }
+
+        return $token;
+    }
+
+    /**
+     * @param array $response
+     *
+     * @return array|bool
+     * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
+     */
+    protected function validateIdToken(array $response)
     {
         $idToken = array_get($response, 'id_token');
         if (empty($idToken)) {
@@ -125,10 +206,9 @@ class OidcProvider extends AbstractProvider
             $kid = $header['kid'];
             $publicKeyInfo = $this->getProviderPublicKeyInfo($kid);
             $payload = $this->verifySignature($publicKeyInfo, $idToken);
-
-            if(false === $payload){
-                throw new UnauthorizedException('Failed to verify ID Token signature.');
-            }
+            $this->verifyIssuer(array_get($payload, 'iss'));
+            $this->verifyAudience(array_get($payload, 'aud'), array_get($payload, 'azp'));
+            $this->verifyExpiry(array_get($payload, 'exp'));
 
             return $payload;
         }
@@ -136,13 +216,75 @@ class OidcProvider extends AbstractProvider
         return false;
     }
 
+    /**
+     * @param string $iss
+     *
+     * @return bool
+     * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
+     */
+    protected function verifyIssuer($iss)
+    {
+        if (empty($this->discoveryEndpoint)) {
+            // Not enough information to verify issuer.
+            return false;
+        }
+        if (OidcConfig::getDiscoveryData($this->discoveryEndpoint, 'issuer') === $iss) {
+            return true;
+        }
+        throw new UnauthorizedException('Failed to verify ID Token issuer.');
+    }
+
+    /**
+     * @param mixed  $aud
+     * @param string $azp
+     *
+     * @return bool
+     * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
+     */
+    protected function verifyAudience($aud, $azp)
+    {
+        if (is_string($aud)) {
+            if ($aud === $this->clientId) {
+                return true;
+            }
+        } elseif (is_array($aud)) {
+            if ($azp === $this->clientId) {
+                return true;
+            }
+        }
+
+        throw new UnauthorizedException('Failed to verify ID Token audience');
+    }
+
+    /**
+     * @param int|string $exp
+     *
+     * @return bool
+     * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
+     */
+    protected function verifyExpiry($exp)
+    {
+        $exp = (int)$exp;
+        if ($exp > time()) {
+            return true;
+        }
+
+        throw new UnauthorizedException('Failed to verify ID Token. Token expired.');
+    }
+
+    /**
+     * @param string $jwt
+     *
+     * @return mixed
+     * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
+     */
     protected function getJwtHeader($jwt)
     {
         $parts = explode('.', $jwt);
 
-        if(count($parts) === 3){
+        if (count($parts) === 3) {
             $header = json_decode(base64_decode(strtr($parts[0], '-_,', '+/=')), true);
-            if(!isset($header['kid'])){
+            if (!isset($header['kid'])) {
                 throw new InternalServerErrorException('Invalid JWT header. No \'kid\' found.');
             }
 
@@ -152,11 +294,16 @@ class OidcProvider extends AbstractProvider
         }
     }
 
+    /**
+     * @param string $kid
+     *
+     * @return mixed
+     */
     protected function getProviderPublicKeyInfo($kid)
     {
         $key = Cache::get(static::getJwksCacheKey($kid));
 
-        if(empty($key)) {
+        if (empty($key)) {
             $keys = $this->getProviderKeys();
             foreach ($keys as $k) {
                 if (array_get($k, 'kty') === 'RSA' && array_get($k, 'kid') === $kid) {
@@ -169,9 +316,13 @@ class OidcProvider extends AbstractProvider
         return $key;
     }
 
+    /**
+     * @return mixed
+     * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
+     */
     protected function getProviderKeys()
     {
-        if(empty($this->jwksUri)){
+        if (empty($this->jwksUri)) {
             throw new InternalServerErrorException('Validation failed. No JWKS endpoint found. Please check service configuration');
         }
         $response = $this->getHttpClient()->get($this->jwksUri);
@@ -180,9 +331,17 @@ class OidcProvider extends AbstractProvider
         return array_get($keys, 'keys');
     }
 
+    /**
+     * @param array  $keyData
+     * @param string $idToken
+     *
+     * @return array
+     * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
+     * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
+     */
     protected function verifySignature($keyData, $idToken)
     {
-        if(isset($keyData['n']) && isset($keyData['e'])){
+        if (isset($keyData['n']) && isset($keyData['e'])) {
             $alg = array_get($keyData, 'alg');
             $encoder = new Base64UrlSafeEncoder();
             $modulus = new BigInteger($encoder->decode($keyData['n']), 256);
@@ -195,38 +354,57 @@ class OidcProvider extends AbstractProvider
             $publicKey = $rsa->getPublicKey();
 
             $jws = SimpleJWS::load($idToken, false, $encoder);
-            if($jws->verify($publicKey, $alg)){
+            if ($jws->verify($publicKey, $alg)) {
                 return $jws->getPayload();
             }
+            throw new UnauthorizedException('Failed to verify ID Token signature.');
         }
         throw new InternalServerErrorException('Failed to verify JWT signature. Invalid public key.');
     }
 
+    /**
+     * @param string $kid
+     *
+     * @return string
+     */
     protected static function getJwksCacheKey($kid)
     {
         return static::JWKS_CACHE_KEY . ':' . $kid;
     }
 
+    /**
+     * {@inheritdoc}
+     */
     protected function getAuthUrl($state)
     {
         return $this->buildAuthUrlFromBase($this->authEndpoint, $state);
     }
 
+    /**
+     * {@inheritdoc}
+     */
     protected function getTokenUrl()
     {
         return $this->tokenEndpoint;
     }
 
+    /**
+     * {@inheritdoc}
+     */
     protected function getTokenFields($code)
     {
-        return array_add(
-            parent::getTokenFields($code), 'grant_type', 'authorization_code'
-        );
+        return array_add(parent::getTokenFields($code), 'grant_type', 'authorization_code');
     }
 
+    /**
+     * {@inheritdoc}
+     */
     protected function getUserByToken($token)
     {
-        if(empty($this->userEndpoint)){
+        if (empty($token)) {
+            throw new InternalServerErrorException('Failed to retrieve user information. No access token found.');
+        }
+        if (empty($this->userEndpoint)) {
             throw new InternalServerErrorException('User Info Endpoint not set. Please check service configuration.');
         }
         $response = $this->getHttpClient()->get($this->userEndpoint, [
@@ -238,6 +416,9 @@ class OidcProvider extends AbstractProvider
         return json_decode($response->getBody()->getContents(), true);
     }
 
+    /**
+     * {@inheritdoc}
+     */
     protected function mapUserToObject(array $user)
     {
         return (new User)->setRaw($user)->map($user);

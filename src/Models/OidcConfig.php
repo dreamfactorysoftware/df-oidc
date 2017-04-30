@@ -3,6 +3,7 @@
 namespace DreamFactory\Core\Oidc\Models;
 
 use DreamFactory\Core\Components\AppRoleMapper;
+use DreamFactory\Core\Exceptions\InternalServerErrorException;
 use DreamFactory\Core\Models\BaseServiceConfigModel;
 use DreamFactory\Core\Models\Role;
 use DreamFactory\Core\Models\Service;
@@ -14,8 +15,14 @@ class OidcConfig extends BaseServiceConfigModel
 {
     use AppRoleMapper;
 
+    /**
+     * {@inheritdoc}
+     */
     protected $table = 'oidc_config';
 
+    /**
+     * {@inheritdoc}
+     */
     protected $fillable = [
         'service_id',
         'default_role',
@@ -32,22 +39,37 @@ class OidcConfig extends BaseServiceConfigModel
         'icon_class',
     ];
 
+    /**
+     * {@inheritdoc}
+     */
     protected $encrypted = ['client_secret'];
 
+    /**
+     * {@inheritdoc}
+     */
     protected $protected = ['client_secret'];
 
+    /**
+     * {@inheritdoc}
+     */
     protected $casts = [
         'service_id'        => 'integer',
         'default_role'      => 'integer',
         'validate_id_token' => 'boolean'
     ];
 
+    /**
+     * {@inheritdoc}
+     */
     protected $rules = [
-        'client_id'         => 'required',
-        'client_secret'     => 'required',
-        'redirect_url'      => 'required'
+        'client_id'     => 'required',
+        'client_secret' => 'required',
+        'redirect_url'  => 'required'
     ];
 
+    /**
+     * {@inheritdoc}
+     */
     public function validate($data, $throwException = true)
     {
         $discovery = array_get($data, 'discovery_document');
@@ -58,19 +80,20 @@ class OidcConfig extends BaseServiceConfigModel
             $this->rules['scopes'] = 'required';
             if (boolval(array_get($data, 'validate_id_token'))) {
                 $this->rules['jwks_uri'] = 'required';
-            } else {
-                $this->rules['user_endpoint'] = 'required';
             }
         }
 
         return parent::validate($data, $throwException);
     }
 
+    /**
+     * @param $value
+     */
     public function setDiscoveryDocumentAttribute($value)
     {
         $this->attributes['discovery_document'] = $value;
         $data = static::getDiscoveryData($value);
-        if(!empty($data)) {
+        if (!empty($data)) {
             if (!isset($this->attributes['auth_endpoint'])) {
                 $this->attributes['auth_endpoint'] = array_get($data, 'authorization_endpoint');
             }
@@ -79,9 +102,6 @@ class OidcConfig extends BaseServiceConfigModel
             }
             if (!isset($this->attributes['user_endpoint'])) {
                 $this->attributes['user_endpoint'] = array_get($data, 'userinfo_endpoint');
-            }
-            if (!isset($this->attributes['validate_id_token'])) {
-                $this->attributes['validate_id_token'] = true;
             }
             if (!isset($this->attributes['jwks_uri'])) {
                 $this->attributes['jwks_uri'] = array_get($data, 'jwks_uri');
@@ -92,81 +112,99 @@ class OidcConfig extends BaseServiceConfigModel
         }
     }
 
+    /**
+     * @param $value
+     */
     public function setAuthEndpointAttribute($value)
     {
         $dd = array_get($this->attributes, 'discovery_document');
-        if(empty($value) && !empty($dd)){
-            $data = static::getDiscoveryData($dd);
-            $value = array_get($data, 'authorization_endpoint');
+        if (empty($value) && !empty($dd)) {
+            $value = static::getDiscoveryData($dd, 'authorization_endpoint');
         }
 
         $this->attributes['auth_endpoint'] = $value;
     }
 
+    /**
+     * @param $value
+     */
     public function setTokenEndpointAttribute($value)
     {
         $dd = array_get($this->attributes, 'discovery_document');
-        if(empty($value) && !empty($dd)){
-            $data = static::getDiscoveryData($dd);
-            $value = array_get($data, 'token_endpoint');
+        if (empty($value) && !empty($dd)) {
+            $value = static::getDiscoveryData($dd, 'token_endpoint');
         }
 
         $this->attributes['token_endpoint'] = $value;
     }
 
+    /**
+     * @param $value
+     */
     public function setUserEndpointAttribute($value)
     {
         $dd = array_get($this->attributes, 'discovery_document');
-        if(empty($value) && !empty($dd)){
-            $data = static::getDiscoveryData($dd);
-            $value = array_get($data, 'userinfo_endpoint');
+        if (empty($value) && !empty($dd)) {
+            $value = static::getDiscoveryData($dd, 'userinfo_endpoint');
         }
 
         $this->attributes['user_endpoint'] = $value;
     }
 
-    public function setValidateIdTokenAttribute($value)
-    {
-        $dd = array_get($this->attributes, 'discovery_document');
-        if(empty($value) && !empty($dd)){
-            $value = true;
-        }
-
-        $this->attributes['validate_id_token'] = $value;
-    }
-
+    /**
+     * @param $value
+     */
     public function setJwksUriAttribute($value)
     {
         $dd = array_get($this->attributes, 'discovery_document');
-        if(empty($value) && !empty($dd)){
-            $data = static::getDiscoveryData($dd);
-            $value = array_get($data, 'jwks_uri');
+        if (empty($value) && !empty($dd)) {
+            $value = static::getDiscoveryData($dd, 'jwks_uri');
         }
 
         $this->attributes['jwks_uri'] = $value;
     }
 
+    /**
+     * @param $value
+     */
     public function setScopesAttribute($value)
     {
         $dd = array_get($this->attributes, 'discovery_document');
-        if(empty($value) && !empty($dd)){
-            $data = static::getDiscoveryData($dd);
-            $value = implode(',', array_get($data, 'scopes_supported'));
+        if (empty($value) && !empty($dd)) {
+            $value = implode(',', static::getDiscoveryData($dd, 'scopes_supported'));
         }
 
         $this->attributes['scopes'] = $value;
     }
 
-    public static function getDiscoveryData($dd)
+    /**
+     * @param string $dd
+     * @param null   $key
+     *
+     * @return mixed|null
+     * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
+     */
+    public static function getDiscoveryData($dd, $key = null)
     {
-        if(empty($dd)){
+        if (empty($dd)) {
             return null;
         }
-        return Cache::remember('DD:'.md5($dd), Config::get('df.default_cache_ttl'), function() use ($dd) {
+        $data = Cache::remember('DD:' . md5($dd), Config::get('df.default_cache_ttl'), function () use ($dd){
             $client = new Client();
             $response = $client->get($dd);
+
             return json_decode($response->getBody()->getContents(), true);
         });
+
+        if (!empty($data)) {
+            if (empty($key)) {
+                return $data;
+            } else {
+                return array_get($data, $key);
+            }
+        } else {
+            throw new InternalServerErrorException('Failed to retrieve discovery document. Please check service configuration.');
+        }
     }
 
     /**
@@ -208,15 +246,17 @@ class OidcConfig extends BaseServiceConfigModel
                 break;
             case 'auth_endpoint':
                 $schema['label'] = 'Authorization Endpoint';
-                $schema['description'] = 'Authorization endpoint of the provider. Not required when Discovery Document Endpoint is entered.';
+                $schema['description'] =
+                    'Authorization endpoint of the provider. Not required when Discovery Document Endpoint is entered.';
                 break;
             case 'token_endpoint':
                 $schema['label'] = 'Token Endpoint';
-                $schema['description'] = 'Token endpoint of the provider. Not required when Discovery Document Endpoint is entered.';
+                $schema['description'] =
+                    'Token endpoint of the provider. Not required when Discovery Document Endpoint is entered.';
                 break;
             case 'user_endpoint':
                 $schema['label'] = 'User Info Endpoint';
-                $schema['description'] = 'User information endpoint of the provider. Not required when Discovery Document Endpoint is entered or Validate ID Token is checked.';
+                $schema['description'] = 'User information endpoint of the provider.';
                 break;
             case 'validate_id_token':
                 $schema['label'] = 'Validate ID Token';
@@ -229,7 +269,8 @@ class OidcConfig extends BaseServiceConfigModel
                 break;
             case 'scopes':
                 $schema['label'] = 'Scopes';
-                $schema['description'] = 'Authorization scopes. Enter multiple scopes separated by comma. Not required when Discovery Document Endpoint is entered.';
+                $schema['description'] =
+                    'Authorization scopes. Enter multiple scopes separated by comma. Not required when Discovery Document Endpoint is entered.';
                 break;
             case 'client_id':
                 $schema['label'] = 'Client ID';
