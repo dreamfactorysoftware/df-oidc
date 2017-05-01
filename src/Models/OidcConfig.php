@@ -242,7 +242,7 @@ class OidcConfig extends BaseServiceConfigModel
                 $schema['description'] = 'Optional OpenID Connect Discovery Document endpoint. ' .
                     'When valid endpoint is provided, following configuration options will be set based on ' .
                     'the Discovery Document. Therefore, you may leave these options blank - Authorization Endpoint, ' .
-                    'Token Endpoint, User Endpoint, Validate ID Token, JWKS URI, Scopes';
+                    'Token Endpoint, User Endpoint, JWKS URI, Scopes';
                 break;
             case 'auth_endpoint':
                 $schema['label'] = 'Authorization Endpoint';
