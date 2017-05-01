@@ -16,6 +16,7 @@ use phpseclib\Math\BigInteger;
 use SocialiteProviders\Manager\OAuth2\User;
 use Cache;
 use Config;
+use Log;
 
 /**
  * Class OidcProvider
@@ -75,6 +76,13 @@ class OidcProvider extends AbstractProvider
     protected $jwksUri = null;
 
     /**
+     * URL safe base 64 encoder
+     *
+     * @var null|\Namshi\JOSE\Base64\Encoder
+     */
+    protected $encoder = null;
+
+    /**
      * OpenID Connect ID Token validation check flag
      *
      * @var bool
@@ -93,6 +101,7 @@ class OidcProvider extends AbstractProvider
         /** @var Request $request */
         $request = \Request::instance();
         parent::__construct($request, $clientId, $clientSecret, $redirectUrl);
+        $this->encoder = new Base64UrlSafeEncoder();
     }
 
     /**
@@ -194,9 +203,6 @@ class OidcProvider extends AbstractProvider
     protected function validateIdToken(array $response)
     {
         $idToken = array_get($response, 'id_token');
-        if (empty($idToken)) {
-            throw new InternalServerErrorException('An unexpected error occurred. No ID Token found in token response.');
-        }
 
         if ($this->validateIdToken === true) {
             if (empty($this->jwksUri)) {
@@ -211,9 +217,18 @@ class OidcProvider extends AbstractProvider
             $this->verifyExpiry(array_get($payload, 'exp'));
 
             return $payload;
-        }
+        } elseif (!empty($idToken)) {
+            $parts = explode('.', $idToken);
+            if (count($parts) !== 3) {
+                throw new InternalServerErrorException('Cannot get JWT header. Incorrect number of segments in JWT.');
+            }
 
-        return false;
+            return json_decode($this->encoder->decode($parts[1]), true);
+        } else {
+            Log::warning('No ID Token found for OpenID Connect service.');
+
+            return null;
+        }
     }
 
     /**
@@ -306,7 +321,7 @@ class OidcProvider extends AbstractProvider
         if (empty($key)) {
             $keys = $this->getProviderKeys();
             foreach ($keys as $k) {
-                if (array_get($k, 'kty') === 'RSA' && array_get($k, 'kid') === $kid) {
+                if (array_get($k, 'kid') === $kid) {
                     $key = $k;
                     Cache::put(static::getJwksCacheKey($kid), $key, Config::get('df.default_cache_ttl'));
                 }
@@ -341,25 +356,37 @@ class OidcProvider extends AbstractProvider
      */
     protected function verifySignature($keyData, $idToken)
     {
-        if (isset($keyData['n']) && isset($keyData['e'])) {
-            $alg = array_get($keyData, 'alg');
-            $encoder = new Base64UrlSafeEncoder();
-            $modulus = new BigInteger($encoder->decode($keyData['n']), 256);
-            $exponent = new BigInteger($encoder->decode($keyData['e']), 256);
+        try {
+            $kty = array_get($keyData, 'kty');
+            $alg = array_get($keyData, 'alg', 'RS256');
+            if ($kty === 'RSA') {
+                $modulus = new BigInteger($this->encoder->decode($keyData['n']), (int)substr($alg, 2));
+                $exponent = new BigInteger($this->encoder->decode($keyData['e']), (int)substr($alg, 2));
 
-            $rsa = new RSA();
-            $rsa->setHash('sha' . substr($alg, 2));
-            $rsa->loadKey(['n' => $modulus, 'e' => $exponent]);
-            $rsa->setPublicKey();
-            $publicKey = $rsa->getPublicKey();
+                $rsa = new RSA();
+                $rsa->setHash('sha' . substr($alg, 2));
+                $rsa->loadKey(['n' => $modulus, 'e' => $exponent]);
+                $rsa->setPublicKey();
+                $publicKey = $rsa->getPublicKey();
+            } else {
+                throw new InternalServerErrorException(
+                    'Failed to verify JWT signature. Unsupported key type (kty) [' . $kty . ']' .
+                    'Only RSA key type is supported at this time.'
+                );
+            }
 
-            $jws = SimpleJWS::load($idToken, false, $encoder);
+            $jws = SimpleJWS::load($idToken, false, $this->encoder);
             if ($jws->verify($publicKey, $alg)) {
                 return $jws->getPayload();
             }
-            throw new UnauthorizedException('Failed to verify ID Token signature.');
+
+            throw new InternalServerErrorException('Failed to verify ID Token signature.');
+        } catch (\Exception $e) {
+            throw new UnauthorizedException(
+                $e->getMessage() .
+                ' Uncheck \'Validate ID Token\' checkbox in the service configuration and try again.'
+            );
         }
-        throw new InternalServerErrorException('Failed to verify JWT signature. Invalid public key.');
     }
 
     /**
