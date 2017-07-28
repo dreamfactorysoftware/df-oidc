@@ -4,6 +4,7 @@ namespace DreamFactory\Core\Oidc\Services;
 
 use DreamFactory\Core\OAuth\Services\BaseOAuthService;
 use DreamFactory\Core\Oidc\Components\OidcProvider;
+use DreamFactory\Core\Oidc\Resources\SSO;
 
 class OIDC extends BaseOAuthService
 {
@@ -11,6 +12,15 @@ class OIDC extends BaseOAuthService
      * Service provider name.
      */
     const PROVIDER_NAME = 'openid_connect';
+
+    /** @type array Service Resources */
+    protected static $resources = [
+        SSO::RESOURCE_NAME => [
+            'name'       => SSO::RESOURCE_NAME,
+            'class_name' => SSO::class,
+            'label'      => 'Single Sign On'
+        ],
+    ];
 
     /**
      * {@inheritdoc}

@@ -162,6 +162,15 @@ class OidcProvider extends AbstractProvider
         }
 
         $response = $this->getAccessTokenResponse($this->getCode());
+
+        return $this->getUserFromTokenResponse($response);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function getUserFromTokenResponse($response)
+    {
         $this->credentialsResponseBody = $response;
         $token = $this->parseAccessToken($response);
         $payload = $this->validateIdToken($response);
