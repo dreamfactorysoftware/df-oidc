@@ -24,6 +24,12 @@ class ServiceProvider extends \Illuminate\Support\ServiceProvider
                     'factory'         => function ($config){
                         return new OIDC($config);
                     },
+                    'access_exceptions' => [
+                        [
+                            'verb_mask' => 2,
+                            'resource'  => 'sso',
+                        ]
+                    ],
                 ])
             );
         });
