@@ -17,9 +17,9 @@ class SSO extends BaseSSO
         $base = [
             $path => [
                 'post' => [
-                    'summary'     => 'perform' . $capitalized . 'SSO() - Single Sign On',
-                    'operationId' => 'perform' . $capitalized . 'SSO',
+                    'summary'     => 'Single Sign On',
                     'description' => 'Performs Single Sign On using OAuth 2.0 access token',
+                    'operationId' => 'perform' . $capitalized . 'SSO',
                     'requestBody' => [
                         'description' => 'Content - OAuth token response',
                         'content'     => [
