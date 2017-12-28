@@ -26,13 +26,13 @@
     }
   ],
   "support":     {
-    "email":  "support@dreamfactory.com",
+    "email":  "dspsupport@dreamfactory.com",
     "source": "https://github.com/dreamfactorysoftware/df-oidc",
     "issues": "https://github.com/dreamfactorysoftware/df-oidc/issues",
     "wiki":   "https://wiki.dreamfactory.com"
   },
   "require":     {
-    "dreamfactory/df-oauth": "~0.13.0",
+    "dreamfactory/df-oauth": "~0.14.0",
     "phpseclib/phpseclib": "2.0.*"
   },
   "autoload":    {
@@ -42,7 +42,7 @@
   },
   "extra":       {
     "branch-alias": {
-      "dev-develop": "0.4.x-dev"
+      "dev-develop": "0.5.x-dev"
     },
     "laravel": {
       "providers": [
