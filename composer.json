@@ -32,7 +32,7 @@
     "wiki":   "https://wiki.dreamfactory.com"
   },
   "require":     {
-    "dreamfactory/df-oauth": "~0.14.1",
+    "dreamfactory/df-oauth": "dev-laravel-upgrade",
     "phpseclib/phpseclib": "2.0.*"
   },
   "autoload":    {
