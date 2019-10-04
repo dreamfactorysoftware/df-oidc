@@ -31,6 +31,8 @@
     "issues": "https://github.com/dreamfactorysoftware/df-oidc/issues",
     "wiki":   "https://wiki.dreamfactory.com"
   },
+  "minimum-stability": "dev",
+  "prefer-stable": true,
   "require":     {
     "dreamfactory/df-oauth": "~0.14.1",
     "phpseclib/phpseclib": "2.0.*"
