@@ -34,7 +34,7 @@
   "minimum-stability": "dev",
   "prefer-stable": true,
   "require":     {
-    "dreamfactory/df-oauth": "~0.15.0",
+    "dreamfactory/df-oauth": "~0.15.1",
     "phpseclib/phpseclib": "2.0.*"
   },
   "autoload":    {
