@@ -147,7 +147,7 @@ class OidcProvider extends AbstractProvider
     /**
      * @param array $scopes
      */
-    public function setScopes(array $scopes)
+    public function setScopes($scopes)
     {
         $this->scopes = $scopes;
     }
