@@ -17,6 +17,7 @@ use SocialiteProviders\Manager\OAuth2\User;
 use Cache;
 use Config;
 use Log;
+use Arr;
 
 /**
  * Class OidcProvider
@@ -195,7 +196,7 @@ class OidcProvider extends AbstractProvider
      */
     protected function parseAccessToken($body)
     {
-        $token = array_get($body, 'access_token');
+        $token = Arr::get($body, 'access_token');
         if (empty($token)) {
             $token = '--NOT-AVAILABLE--';
         }
@@ -211,7 +212,7 @@ class OidcProvider extends AbstractProvider
      */
     protected function validateIdToken(array $response)
     {
-        $idToken = array_get($response, 'id_token');
+        $idToken = Arr::get($response, 'id_token');
 
         if ($this->validateIdToken === true) {
             if (empty($this->jwksUri)) {
@@ -221,9 +222,9 @@ class OidcProvider extends AbstractProvider
             $kid = $header['kid'];
             $publicKeyInfo = $this->getProviderPublicKeyInfo($kid);
             $payload = $this->verifySignature($publicKeyInfo, $idToken);
-            $this->verifyIssuer(array_get($payload, 'iss'));
-            $this->verifyAudience(array_get($payload, 'aud'), array_get($payload, 'azp'));
-            $this->verifyExpiry(array_get($payload, 'exp'));
+            $this->verifyIssuer(Arr::get($payload, 'iss'));
+            $this->verifyAudience(Arr::get($payload, 'aud'), Arr::get($payload, 'azp'));
+            $this->verifyExpiry(Arr::get($payload, 'exp'));
 
             return $payload;
         } elseif (!empty($idToken)) {
@@ -330,7 +331,7 @@ class OidcProvider extends AbstractProvider
         if (empty($key)) {
             $keys = $this->getProviderKeys();
             foreach ($keys as $k) {
-                if (array_get($k, 'kid') === $kid) {
+                if (Arr::get($k, 'kid') === $kid) {
                     $key = $k;
                     Cache::put(static::getJwksCacheKey($kid), $key, Config::get('df.default_cache_ttl'));
                 }
@@ -352,7 +353,7 @@ class OidcProvider extends AbstractProvider
         $response = $this->getHttpClient()->get($this->jwksUri);
         $keys = json_decode($response->getBody()->getContents(), true);
 
-        return array_get($keys, 'keys');
+        return Arr::get($keys, 'keys');
     }
 
     /**
@@ -366,8 +367,8 @@ class OidcProvider extends AbstractProvider
     protected function verifySignature($keyData, $idToken)
     {
         try {
-            $kty = array_get($keyData, 'kty');
-            $alg = array_get($keyData, 'alg', 'RS256');
+            $kty = Arr::get($keyData, 'kty');
+            $alg = Arr::get($keyData, 'alg', 'RS256');
             if ($kty === 'RSA') {
                 $modulus = new BigInteger($this->encoder->decode($keyData['n']), (int)substr($alg, 2));
                 $exponent = new BigInteger($this->encoder->decode($keyData['e']), (int)substr($alg, 2));
@@ -429,7 +430,7 @@ class OidcProvider extends AbstractProvider
      */
     protected function getTokenFields($code)
     {
-        return array_add(parent::getTokenFields($code), 'grant_type', 'authorization_code');
+        return Arr::add(parent::getTokenFields($code), 'grant_type', 'authorization_code');
     }
 
     /**

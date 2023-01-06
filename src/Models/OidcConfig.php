@@ -10,6 +10,7 @@ use DreamFactory\Core\Models\Service;
 use GuzzleHttp\Client;
 use Cache;
 use Config;
+use Arr;
 
 class OidcConfig extends BaseServiceConfigModel
 {
@@ -72,13 +73,13 @@ class OidcConfig extends BaseServiceConfigModel
      */
     public function validate($data, $throwException = true)
     {
-        $discovery = array_get($data, 'discovery_document');
+        $discovery = Arr::get($data, 'discovery_document');
 
         if (empty($discovery)) {
             $this->rules['auth_endpoint'] = 'required';
             $this->rules['token_endpoint'] = 'required';
             $this->rules['scopes'] = 'required';
-            if (boolval(array_get($data, 'validate_id_token'))) {
+            if (boolval(Arr::get($data, 'validate_id_token'))) {
                 $this->rules['jwks_uri'] = 'required';
             }
         }
@@ -95,19 +96,19 @@ class OidcConfig extends BaseServiceConfigModel
         $data = static::getDiscoveryData($value);
         if (!empty($data)) {
             if (!isset($this->attributes['auth_endpoint'])) {
-                $this->attributes['auth_endpoint'] = array_get($data, 'authorization_endpoint');
+                $this->attributes['auth_endpoint'] = Arr::get($data, 'authorization_endpoint');
             }
             if (!isset($this->attributes['token_endpoint'])) {
-                $this->attributes['token_endpoint'] = array_get($data, 'token_endpoint');
+                $this->attributes['token_endpoint'] = Arr::get($data, 'token_endpoint');
             }
             if (!isset($this->attributes['user_endpoint'])) {
-                $this->attributes['user_endpoint'] = array_get($data, 'userinfo_endpoint');
+                $this->attributes['user_endpoint'] = Arr::get($data, 'userinfo_endpoint');
             }
             if (!isset($this->attributes['jwks_uri'])) {
-                $this->attributes['jwks_uri'] = array_get($data, 'jwks_uri');
+                $this->attributes['jwks_uri'] = Arr::get($data, 'jwks_uri');
             }
             if (!isset($this->attributes['scopes'])) {
-                $this->attributes['scopes'] = implode(',', array_get($data, 'scopes_supported'));
+                $this->attributes['scopes'] = implode(',', Arr::get($data, 'scopes_supported'));
             }
         }
     }
@@ -117,7 +118,7 @@ class OidcConfig extends BaseServiceConfigModel
      */
     public function setAuthEndpointAttribute($value)
     {
-        $dd = array_get($this->attributes, 'discovery_document');
+        $dd = Arr::get($this->attributes, 'discovery_document');
         if (empty($value) && !empty($dd)) {
             $value = static::getDiscoveryData($dd, 'authorization_endpoint');
         }
@@ -130,7 +131,7 @@ class OidcConfig extends BaseServiceConfigModel
      */
     public function setTokenEndpointAttribute($value)
     {
-        $dd = array_get($this->attributes, 'discovery_document');
+        $dd = Arr::get($this->attributes, 'discovery_document');
         if (empty($value) && !empty($dd)) {
             $value = static::getDiscoveryData($dd, 'token_endpoint');
         }
@@ -143,7 +144,7 @@ class OidcConfig extends BaseServiceConfigModel
      */
     public function setUserEndpointAttribute($value)
     {
-        $dd = array_get($this->attributes, 'discovery_document');
+        $dd = Arr::get($this->attributes, 'discovery_document');
         if (empty($value) && !empty($dd)) {
             $value = static::getDiscoveryData($dd, 'userinfo_endpoint');
         }
@@ -156,7 +157,7 @@ class OidcConfig extends BaseServiceConfigModel
      */
     public function setJwksUriAttribute($value)
     {
-        $dd = array_get($this->attributes, 'discovery_document');
+        $dd = Arr::get($this->attributes, 'discovery_document');
         if (empty($value) && !empty($dd)) {
             $value = static::getDiscoveryData($dd, 'jwks_uri');
         }
@@ -169,7 +170,7 @@ class OidcConfig extends BaseServiceConfigModel
      */
     public function setScopesAttribute($value)
     {
-        $dd = array_get($this->attributes, 'discovery_document');
+        $dd = Arr::get($this->attributes, 'discovery_document');
         if (empty($value) && !empty($dd)) {
             $value = implode(',', static::getDiscoveryData($dd, 'scopes_supported'));
         }
@@ -200,7 +201,7 @@ class OidcConfig extends BaseServiceConfigModel
             if (empty($key)) {
                 return $data;
             } else {
-                return array_get($data, $key);
+                return Arr::get($data, $key);
             }
         } else {
             throw new InternalServerErrorException('Failed to retrieve discovery document. Please check service configuration.');

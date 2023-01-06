@@ -35,7 +35,7 @@
   "prefer-stable": true,
   "require":     {
     "dreamfactory/df-oauth": "~0.16",
-    "phpseclib/phpseclib": "2.0.*"
+    "phpseclib/phpseclib": "3.0.*"
   },
   "autoload":    {
     "psr-4": {
