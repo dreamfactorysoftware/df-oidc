@@ -377,11 +377,24 @@ class OidcProvider extends AbstractProvider
      * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
      * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
      */
+    /**
+     * Algorithms accepted from the JWKS document. We deliberately reject
+     * 'none', HMAC variants (HS*), and anything else not on this list:
+     * a malicious or compromised JWKS could otherwise downgrade verification
+     * (alg=none) or trigger HMAC/RSA confusion.
+     */
+    public const ALLOWED_JWS_ALGS = ['RS256', 'RS384', 'RS512'];
+
     protected function verifySignature($keyData, $idToken)
     {
         try {
             $kty = Arr::get($keyData, 'kty');
             $alg = Arr::get($keyData, 'alg', 'RS256');
+            if (!in_array($alg, self::ALLOWED_JWS_ALGS, true)) {
+                throw new InternalServerErrorException(
+                    'Failed to verify JWT signature. Disallowed algorithm [' . $alg . '].'
+                );
+            }
             if ($kty === 'RSA') {
                 $modulus = new BigInteger($this->encoder->decode($keyData['n']), (int)substr($alg, 2));
                 $exponent = new BigInteger($this->encoder->decode($keyData['e']), (int)substr($alg, 2));
