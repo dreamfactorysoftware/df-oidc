@@ -214,6 +214,18 @@ class OidcProvider extends AbstractProvider
     {
         $idToken = Arr::get($response, 'id_token');
 
+        // Always validate when an id_token is present. The previous behavior
+        // had an `elseif (!empty($idToken))` branch that returned the raw
+        // base64-decoded JWT payload WITHOUT verifying signature, issuer,
+        // audience, or expiry — meaning a forged id_token from any source
+        // (or an unsigned JWT) would be accepted and its claims trusted to
+        // populate the user record. Removed.
+        //
+        // When validation is configured (validateIdToken=true and jwksUri
+        // set), we run the full check. Otherwise we DO NOT trust the
+        // id_token payload at all — getUserFromTokenResponse() falls back
+        // to calling the userinfo endpoint with the access_token, which
+        // is authenticated server-to-server.
         if ($this->validateIdToken === true) {
             if (empty($this->jwksUri)) {
                 throw new InternalServerErrorException('Token validation is turned on but no JWKS URI found. Please check your service configuration.');
@@ -227,18 +239,19 @@ class OidcProvider extends AbstractProvider
             $this->verifyExpiry(Arr::get($payload, 'exp'));
 
             return $payload;
-        } elseif (!empty($idToken)) {
-            $parts = explode('.', $idToken);
-            if (count($parts) !== 3) {
-                throw new InternalServerErrorException('Cannot get JWT header. Incorrect number of segments in JWT.');
-            }
+        }
 
-            return json_decode($this->encoder->decode($parts[1]), true);
+        if (!empty($idToken)) {
+            Log::warning(
+                'OIDC id_token received but validateIdToken is disabled or jwksUri unset; '
+                . 'id_token claims will NOT be trusted. Falling back to userinfo endpoint. '
+                . 'Enable validateIdToken + configure jwksUri to consume id_token claims directly.'
+            );
         } else {
             Log::warning('No ID Token found for OpenID Connect service.');
-
-            return null;
         }
+
+        return null;
     }
 
     /**
@@ -364,11 +377,24 @@ class OidcProvider extends AbstractProvider
      * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
      * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
      */
+    /**
+     * Algorithms accepted from the JWKS document. We deliberately reject
+     * 'none', HMAC variants (HS*), and anything else not on this list:
+     * a malicious or compromised JWKS could otherwise downgrade verification
+     * (alg=none) or trigger HMAC/RSA confusion.
+     */
+    public const ALLOWED_JWS_ALGS = ['RS256', 'RS384', 'RS512'];
+
     protected function verifySignature($keyData, $idToken)
     {
         try {
             $kty = Arr::get($keyData, 'kty');
             $alg = Arr::get($keyData, 'alg', 'RS256');
+            if (!in_array($alg, self::ALLOWED_JWS_ALGS, true)) {
+                throw new InternalServerErrorException(
+                    'Failed to verify JWT signature. Disallowed algorithm [' . $alg . '].'
+                );
+            }
             if ($kty === 'RSA') {
                 $modulus = new BigInteger($this->encoder->decode($keyData['n']), (int)substr($alg, 2));
                 $exponent = new BigInteger($this->encoder->decode($keyData['e']), (int)substr($alg, 2));
