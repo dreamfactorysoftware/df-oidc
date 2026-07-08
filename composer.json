@@ -37,7 +37,7 @@
     "php": "^8.3",
     "laravel/helpers": "^1.8",
     "dreamfactory/df-oauth": "~1.0",
-    "phpseclib/phpseclib": "3.0.*"
+    "firebase/php-jwt": "^6.0 || ^7.0"
   },
   "require-dev": {
     "laravel/framework": "^13.7",

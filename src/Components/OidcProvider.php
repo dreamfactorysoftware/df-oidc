@@ -9,10 +9,9 @@ use DreamFactory\Core\Oidc\Models\OidcConfig;
 use Illuminate\Http\Request;
 use Laravel\Socialite\Two\AbstractProvider;
 use Laravel\Socialite\Two\InvalidStateException;
-use Namshi\JOSE\Base64\Base64UrlSafeEncoder;
-use Namshi\JOSE\SimpleJWS;
-use phpseclib\Crypt\RSA;
-use phpseclib\Math\BigInteger;
+use Firebase\JWT\JWT;
+use Firebase\JWT\JWK;
+use Firebase\JWT\ExpiredException;
 use SocialiteProviders\Manager\OAuth2\User;
 use Cache;
 use Config;
@@ -77,18 +76,25 @@ class OidcProvider extends AbstractProvider
     protected $jwksUri = null;
 
     /**
-     * URL safe base 64 encoder
-     *
-     * @var null|\Namshi\JOSE\Base64\Encoder
-     */
-    protected $encoder = null;
-
-    /**
      * OpenID Connect ID Token validation check flag
      *
      * @var bool
      */
     public $validateIdToken = false;
+
+    /**
+     * Whether to collect the groups claim for role mapping.
+     *
+     * @var bool
+     */
+    protected $mapGroupToRole = false;
+
+    /**
+     * Name of the claim that carries the user's group memberships.
+     *
+     * @var string
+     */
+    protected $groupsClaim = 'groups';
 
     /**
      * OidcProvider constructor.
@@ -102,7 +108,6 @@ class OidcProvider extends AbstractProvider
         /** @var Request $request */
         $request = \Request::instance();
         parent::__construct($request, $clientId, $clientSecret, $redirectUrl);
-        $this->encoder = new Base64UrlSafeEncoder();
     }
 
     /**
@@ -154,6 +159,20 @@ class OidcProvider extends AbstractProvider
     }
 
     /**
+     * Enable group-to-role mapping and set the claim name to read groups from.
+     *
+     * @param string $claim
+     * @return $this
+     */
+    public function enableGroupMapping($claim = 'groups')
+    {
+        $this->mapGroupToRole = true;
+        $this->groupsClaim = !empty($claim) ? $claim : 'groups';
+
+        return $this;
+    }
+
+    /**
      * {@inheritdoc}
      */
     public function user()
@@ -176,10 +195,35 @@ class OidcProvider extends AbstractProvider
         $token = $this->parseAccessToken($response);
         $payload = $this->validateIdToken($response);
 
-        if (!empty($payload) && is_array($payload) && !empty($payload['name']) && !empty($payload['email'])) {
+        // Prefer the validated id_token payload for identity. It is only
+        // non-null when signature validation succeeded, so trusting it is safe.
+        // Require a subject plus a display identifier; email is NOT required
+        // here because providers such as Azure AD omit `email` but supply
+        // `preferred_username` (mapUserToObject resolves the email fallback).
+        // When there is no usable validated payload we fall back to the
+        // server-to-server userinfo endpoint.
+        $userInfo = null;
+        $payloadSub = is_array($payload) ? ($payload['sub'] ?? $payload['oid'] ?? null) : null;
+        $payloadName = is_array($payload) ? ($payload['name'] ?? $payload['preferred_username'] ?? null) : null;
+        if (!empty($payloadSub) && !empty($payloadName)) {
             $user = $this->mapUserToObject($payload);
         } else {
-            $user = $this->mapUserToObject($this->getUserByToken($token));
+            $userInfo = $this->getUserByToken($token);
+            $user = $this->mapUserToObject($userInfo);
+        }
+
+        // Collect group memberships for role mapping from every trusted source.
+        // The validated id_token payload is preferred (e.g. Azure AD returns
+        // group Object IDs only in the id_token, and only when validation is on);
+        // the userinfo response is the fallback for providers that expose groups
+        // there. Attaching under a normalized 'groups' key on the raw user lets
+        // the service read them uniformly via getRaw().
+        if ($this->mapGroupToRole) {
+            $groups = $this->extractGroups([
+                is_array($payload) ? $payload : [],
+                is_array($userInfo) ? $userInfo : [],
+            ]);
+            $user->setRaw(array_merge($user->getRaw(), ['groups' => $groups]));
         }
 
         if ($user instanceof User) {
@@ -189,6 +233,91 @@ class OidcProvider extends AbstractProvider
         return $user->setToken($token)
             ->setRefreshToken($this->parseRefreshToken($response))
             ->setExpiresIn($this->parseExpiresIn($response));
+    }
+
+    /**
+     * Extract and normalize the configured groups claim from a list of trusted
+     * sources (validated id_token payload and/or userinfo response).
+     *
+     * @param array $sources Array of associative arrays to inspect.
+     * @return array De-duplicated list of group references (strings).
+     */
+    protected function extractGroups(array $sources)
+    {
+        $groups = [];
+        $overageDetected = false;
+
+        foreach ($sources as $source) {
+            if (!is_array($source) || empty($source)) {
+                continue;
+            }
+
+            $claim = Arr::get($source, $this->groupsClaim);
+
+            // Azure AD "groups overage": when a user belongs to too many groups
+            // to fit in the token, Azure omits the groups claim and returns a
+            // _claim_names / _claim_sources pointer to the Graph API instead.
+            // We cannot resolve those from the token alone. See README.
+            if (empty($claim) && Arr::get($source, '_claim_names.groups') !== null) {
+                $overageDetected = true;
+                continue;
+            }
+
+            if (empty($claim)) {
+                continue;
+            }
+
+            foreach ($this->normalizeGroupClaim($claim) as $value) {
+                $groups[$value] = true; // key-based de-dup across sources
+            }
+        }
+
+        if ($overageDetected && empty($groups)) {
+            Log::warning(
+                'OIDC group-to-role: provider signaled a groups overage (too many groups to fit in the '
+                . 'token) via _claim_names/_claim_sources. Resolving the full group list requires a '
+                . 'provider directory API call, which is not supported. No group role mapping was applied; '
+                . 'the user will receive the default role.'
+            );
+        }
+
+        return array_keys($groups);
+    }
+
+    /**
+     * Normalize a groups claim value into a flat list of string references.
+     * Handles: array of strings (Azure GUIDs, Okta names), array of objects
+     * (pull id/displayName/name/value), and single delimited strings.
+     *
+     * @param mixed $claim
+     * @return array
+     */
+    protected function normalizeGroupClaim($claim)
+    {
+        if (is_string($claim)) {
+            return array_values(array_filter(array_map('trim', preg_split('/[\s,]+/', $claim))));
+        }
+
+        if (!is_array($claim)) {
+            return [];
+        }
+
+        $out = [];
+        foreach ($claim as $item) {
+            if (is_string($item) || is_numeric($item)) {
+                $out[] = (string)$item;
+            } elseif (is_array($item)) {
+                $val = Arr::get($item, 'id',
+                    Arr::get($item, 'displayName',
+                        Arr::get($item, 'name',
+                            Arr::get($item, 'value'))));
+                if (!empty($val)) {
+                    $out[] = (string)$val;
+                }
+            }
+        }
+
+        return array_values(array_filter(array_map('trim', $out)));
     }
 
     /**
@@ -230,10 +359,7 @@ class OidcProvider extends AbstractProvider
             if (empty($this->jwksUri)) {
                 throw new InternalServerErrorException('Token validation is turned on but no JWKS URI found. Please check your service configuration.');
             }
-            $header = $this->getJwtHeader($idToken);
-            $kid = $header['kid'];
-            $publicKeyInfo = $this->getProviderPublicKeyInfo($kid);
-            $payload = $this->verifySignature($publicKeyInfo, $idToken);
+            $payload = $this->verifySignature($idToken);
             $this->verifyIssuer(Arr::get($payload, 'iss'));
             $this->verifyAudience(Arr::get($payload, 'aud'), Arr::get($payload, 'azp'));
             $this->verifyExpiry(Arr::get($payload, 'exp'));
@@ -333,29 +459,9 @@ class OidcProvider extends AbstractProvider
     }
 
     /**
-     * @param string $kid
+     * Fetch (and cache) the provider's raw JWKS document.
      *
-     * @return mixed
-     */
-    protected function getProviderPublicKeyInfo($kid)
-    {
-        $key = Cache::get(static::getJwksCacheKey($kid));
-
-        if (empty($key)) {
-            $keys = $this->getProviderKeys();
-            foreach ($keys as $k) {
-                if (Arr::get($k, 'kid') === $kid) {
-                    $key = $k;
-                    Cache::put(static::getJwksCacheKey($kid), $key, Config::get('df.default_cache_ttl'));
-                }
-            }
-        }
-
-        return $key;
-    }
-
-    /**
-     * @return mixed
+     * @return array The decoded JWKS, e.g. ['keys' => [...]].
      * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
      */
     protected function getProviderKeys()
@@ -363,76 +469,80 @@ class OidcProvider extends AbstractProvider
         if (empty($this->jwksUri)) {
             throw new InternalServerErrorException('Validation failed. No JWKS endpoint found. Please check service configuration');
         }
-        $response = $this->getHttpClient()->get($this->jwksUri);
-        $keys = json_decode($response->getBody()->getContents(), true);
 
-        return Arr::get($keys, 'keys');
+        return Cache::remember(
+            static::JWKS_CACHE_KEY . ':set:' . md5($this->jwksUri),
+            Config::get('df.default_cache_ttl'),
+            function () {
+                $response = $this->getHttpClient()->get($this->jwksUri);
+
+                return json_decode($response->getBody()->getContents(), true);
+            }
+        );
     }
 
     /**
-     * @param array  $keyData
-     * @param string $idToken
+     * Parse the provider JWKS into a map of kid => Firebase\JWT\Key.
+     * Azure AD (and some others) omit 'alg' on JWKS entries, so RS256 is
+     * supplied as the default.
      *
-     * @return array
+     * @return array<string, \Firebase\JWT\Key>
      * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
-     * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
      */
+    protected function getProviderKeySet()
+    {
+        try {
+            return JWK::parseKeySet($this->getProviderKeys(), 'RS256');
+        } catch (\Exception $e) {
+            throw new InternalServerErrorException('Failed to parse provider JWKS. ' . $e->getMessage());
+        }
+    }
+
     /**
-     * Algorithms accepted from the JWKS document. We deliberately reject
+     * Algorithms accepted for ID Token signatures. We deliberately reject
      * 'none', HMAC variants (HS*), and anything else not on this list:
-     * a malicious or compromised JWKS could otherwise downgrade verification
-     * (alg=none) or trigger HMAC/RSA confusion.
+     * a malicious or compromised token/JWKS could otherwise downgrade
+     * verification (alg=none) or trigger HMAC/RSA confusion.
      */
     public const ALLOWED_JWS_ALGS = ['RS256', 'RS384', 'RS512'];
 
-    protected function verifySignature($keyData, $idToken)
+    /**
+     * Verify the ID Token signature and time claims using the provider JWKS.
+     *
+     * @param string $idToken
+     *
+     * @return array The verified token payload.
+     * @throws \DreamFactory\Core\Exceptions\InternalServerErrorException
+     * @throws \DreamFactory\Core\Exceptions\UnauthorizedException
+     */
+    protected function verifySignature($idToken)
     {
+        // Enforce the algorithm allowlist from the token header up front, before
+        // any signature work, to reject 'none', HMAC (HS*), and downgrade/confusion.
+        $header = $this->getJwtHeader($idToken);
+        $alg = Arr::get($header, 'alg');
+        if (!in_array($alg, self::ALLOWED_JWS_ALGS, true)) {
+            throw new UnauthorizedException(
+                'Failed to verify JWT signature. Disallowed algorithm [' . $alg . '].'
+            );
+        }
+
         try {
-            $kty = Arr::get($keyData, 'kty');
-            $alg = Arr::get($keyData, 'alg', 'RS256');
-            if (!in_array($alg, self::ALLOWED_JWS_ALGS, true)) {
-                throw new InternalServerErrorException(
-                    'Failed to verify JWT signature. Disallowed algorithm [' . $alg . '].'
-                );
-            }
-            if ($kty === 'RSA') {
-                $modulus = new BigInteger($this->encoder->decode($keyData['n']), (int)substr($alg, 2));
-                $exponent = new BigInteger($this->encoder->decode($keyData['e']), (int)substr($alg, 2));
+            // Small leeway to tolerate minor clock skew on exp/nbf/iat.
+            JWT::$leeway = 60;
+            // JWT::decode selects the key by the token 'kid', verifies the RSA
+            // signature, and validates exp/nbf/iat, throwing on any failure.
+            $decoded = JWT::decode($idToken, $this->getProviderKeySet());
 
-                $rsa = new RSA();
-                $rsa->setHash('sha' . substr($alg, 2));
-                $rsa->loadKey(['n' => $modulus, 'e' => $exponent]);
-                $rsa->setPublicKey();
-                $publicKey = $rsa->getPublicKey();
-            } else {
-                throw new InternalServerErrorException(
-                    'Failed to verify JWT signature. Unsupported key type (kty) [' . $kty . ']' .
-                    'Only RSA key type is supported at this time.'
-                );
-            }
-
-            $jws = SimpleJWS::load($idToken, false, $this->encoder);
-            if ($jws->verify($publicKey, $alg)) {
-                return $jws->getPayload();
-            }
-
-            throw new InternalServerErrorException('Failed to verify ID Token signature.');
+            return json_decode(json_encode($decoded), true);
+        } catch (ExpiredException $e) {
+            throw new UnauthorizedException('Failed to verify ID Token. Token expired.');
         } catch (\Exception $e) {
             throw new UnauthorizedException(
                 $e->getMessage() .
                 ' Uncheck \'Validate ID Token\' checkbox in the service configuration and try again.'
             );
         }
-    }
-
-    /**
-     * @param string $kid
-     *
-     * @return string
-     */
-    protected static function getJwksCacheKey($kid)
-    {
-        return static::JWKS_CACHE_KEY . ':' . $kid;
     }
 
     /**
@@ -481,9 +591,23 @@ class OidcProvider extends AbstractProvider
 
     /**
      * {@inheritdoc}
+     *
+     * Maps standard OpenID Connect claims. The subject is carried in `sub`
+     * (not `id`), and many providers - notably Azure AD - omit `email` for
+     * accounts without a mailbox, exposing the sign-in name in
+     * `preferred_username`/`upn` instead. We fall back accordingly so a usable
+     * identifier and email are always resolved when available.
      */
     protected function mapUserToObject(array $user)
     {
-        return (new User)->setRaw($user)->map($user);
+        return (new User)->setRaw($user)->map([
+            'id'       => Arr::get($user, 'sub', Arr::get($user, 'oid', Arr::get($user, 'id'))),
+            'nickname' => Arr::get($user, 'preferred_username', Arr::get($user, 'nickname')),
+            'name'     => Arr::get($user, 'name', Arr::get($user, 'preferred_username')),
+            'email'    => Arr::get($user, 'email',
+                Arr::get($user, 'preferred_username',
+                    Arr::get($user, 'upn'))),
+            'avatar'   => Arr::get($user, 'picture'),
+        ]);
     }
 }
