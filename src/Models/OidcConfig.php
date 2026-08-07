@@ -7,6 +7,7 @@ use DreamFactory\Core\Exceptions\InternalServerErrorException;
 use DreamFactory\Core\Models\BaseServiceConfigModel;
 use DreamFactory\Core\Models\Role;
 use DreamFactory\Core\Models\Service;
+use DreamFactory\Core\Oidc\Models\RoleOidc;
 use GuzzleHttp\Client;
 use Cache;
 use Config;
@@ -14,7 +15,13 @@ use Arr;
 
 class OidcConfig extends BaseServiceConfigModel
 {
-    use AppRoleMapper;
+    // Alias the trait's config methods so this model can layer group-to-role
+    // mapping on top of the app_role_map handling the trait provides.
+    use AppRoleMapper {
+        getConfigSchema as protected getAppRoleMapperSchema;
+        getConfig as protected getAppRoleMapperConfig;
+        setConfig as protected setAppRoleMapperConfig;
+    }
 
     /**
      * {@inheritdoc}
@@ -38,6 +45,8 @@ class OidcConfig extends BaseServiceConfigModel
         'client_secret',
         'redirect_url',
         'icon_class',
+        'map_group_to_role',
+        'groups_claim',
     ];
 
     /**
@@ -56,7 +65,8 @@ class OidcConfig extends BaseServiceConfigModel
     protected $casts = [
         'service_id'        => 'integer',
         'default_role'      => 'integer',
-        'validate_id_token' => 'boolean'
+        'validate_id_token' => 'boolean',
+        'map_group_to_role' => 'boolean',
     ];
 
     /**
@@ -217,6 +227,90 @@ class OidcConfig extends BaseServiceConfigModel
     }
 
     /**
+     * Get config including group-to-role mappings.
+     *
+     * @param int   $id
+     * @param mixed $local_config
+     * @param bool  $protect
+     * @return array|null
+     */
+    public static function getConfig($id, $local_config = null, $protect = true)
+    {
+        // getAppRoleMapperConfig also appends app_role_map (via the trait).
+        $config = static::getAppRoleMapperConfig($id, $local_config, $protect);
+
+        if ($config) {
+            $groupRoleMaps = RoleOidc::where('role_id', '>', 0)->get();
+            $config['group_role_map'] = [];
+
+            foreach ($groupRoleMaps as $map) {
+                $config['group_role_map'][] = [
+                    'role_id'   => $map->role_id,
+                    'group_ref' => $map->group_ref,
+                ];
+            }
+        }
+
+        return $config;
+    }
+
+    /**
+     * Set config including group-to-role mappings.
+     *
+     * @param int   $id
+     * @param array $config
+     * @param mixed $local_config
+     * @return mixed
+     */
+    public static function setConfig($id, $config, $local_config = null)
+    {
+        // Extract group role map before delegating (the trait/base don't know it).
+        $groupRoleMap = array_get($config, 'group_role_map');
+        unset($config['group_role_map']);
+
+        // Persist main config + app_role_map via the trait.
+        $result = static::setAppRoleMapperConfig($id, $config, $local_config);
+
+        if (isset($groupRoleMap) && is_array($groupRoleMap)) {
+            RoleOidc::query()->delete();
+
+            foreach ($groupRoleMap as $map) {
+                if (!empty($map['role_id']) && !empty($map['group_ref'])) {
+                    RoleOidc::create([
+                        'role_id'   => $map['role_id'],
+                        'group_ref' => $map['group_ref'],
+                    ]);
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public static function getConfigSchema()
+    {
+        // getAppRoleMapperSchema adds the app_role_map field.
+        $schema = static::getAppRoleMapperSchema();
+
+        $schema[] = [
+            'name'        => 'group_role_map',
+            'label'       => 'Group to Role Mapping',
+            'description' => 'Map OpenID Connect provider group memberships to DreamFactory roles. ' .
+                             'When "Map Groups to Roles" is enabled, users are assigned a role based on ' .
+                             'the groups present in their token (or userinfo) response.',
+            'type'        => 'array',
+            'required'    => false,
+            'allow_null'  => true,
+            'items'       => RoleOidc::getConfigSchema(),
+        ];
+
+        return $schema;
+    }
+
+    /**
      * @param array $schema
      */
     protected static function prepareConfigSchemaField(array &$schema)
@@ -290,6 +384,23 @@ class OidcConfig extends BaseServiceConfigModel
             case 'icon_class':
                 $schema['label'] = 'Icon Class';
                 $schema['description'] = 'The icon to display for this OAuth service.';
+                break;
+            case 'map_group_to_role':
+                $schema['label'] = 'Map Groups to Roles';
+                $schema['type'] = 'boolean';
+                $schema['default'] = false;
+                $schema['description'] = 'Enable mapping of OpenID Connect provider group memberships to ' .
+                    'DreamFactory roles. The provider must include the configured groups claim in the ' .
+                    'ID Token or userinfo response. For Azure AD via OIDC the groups claim is only present ' .
+                    'in the ID Token, so "Validate ID Token" must also be enabled.';
+                break;
+            case 'groups_claim':
+                $schema['label'] = 'Groups Claim Name';
+                $schema['type'] = 'string';
+                $schema['default'] = 'groups';
+                $schema['description'] = 'Name of the claim that carries the user\'s group memberships. ' .
+                    'Defaults to "groups" (Okta, Keycloak, Azure AD). For Auth0 use your namespaced ' .
+                    'claim, e.g. "https://your-app/groups".';
                 break;
         }
     }
