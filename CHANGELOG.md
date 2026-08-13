@@ -3,6 +3,13 @@ All notable changes to this project will be documented in this file.
 This project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
+### Added
+- Group-to-role mapping: assign a DreamFactory role based on the provider's groups claim (configurable claim name; matches group names or ids). Priority: group mapping > role per app > default role. Includes handling/logging for the Azure AD groups-overage case.
+### Fixed
+- ID Token validation now uses `firebase/php-jwt` (already in the DreamFactory dependency tree) instead of the undeclared, abandoned `namshi/jose`, which was not installed and caused a 500 when instantiating any OIDC service. Signature/alg-allowlist/issuer/audience/expiry checks are preserved.
+### Changed
+- Dependencies: added `firebase/php-jwt`; removed the now-unused `phpseclib/phpseclib`.
+
 ## [0.5.0] - 2017-12-26
 ### Added
 - Added package discovery
